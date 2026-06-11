@@ -1500,6 +1500,24 @@
   /* ---------- Communication status (avatar ring + chip) ---------- */
   .avatar { transition: box-shadow 320ms cubic-bezier(.2,.7,.2,1), transform 240ms ease; }
 
+  /* Interactive avatar (cards & rows) — only the picture is clickable, not the
+     whole card. Hover scales gently; keyboard focus shows a clear ring. The
+     existing colored comms rings (yellow/orange/red) keep working underneath. */
+  .avatar.is-clickable {
+    cursor: pointer;
+    outline: none;
+  }
+  .avatar.is-clickable:hover {
+    transform: scale(1.06);
+  }
+  .avatar.is-clickable:active {
+    transform: scale(0.98);
+  }
+  .avatar.is-clickable:focus-visible {
+    outline: 2px solid var(--accent-2);
+    outline-offset: 3px;
+  }
+
   .avatar.ring-yellow {
     box-shadow:
       0 0 0 2.5px #fff,
@@ -1707,8 +1725,33 @@
   .swatch-orange { background: #f97316; box-shadow: 0 0 0 3px rgba(249,115,22,0.18); }
   .swatch-red    { background: #ef4444; box-shadow: 0 0 0 3px rgba(239,68,68,0.20); }
 
-  /* ---------- Profile modal ---------- */
-  .modal.profile { max-width: 640px; }
+  /* ---------- Profile drawer (right-side slide-in panel) ----------
+     The profile view is special-cased: the backdrop hugs the right edge of the
+     viewport and the panel slides in from the right instead of popping from the
+     center. All the other modals (Add Agent, Drill-down) keep the centered
+     popup behavior — only #profileModal is overridden. */
+  #profileModal {
+    align-items: stretch;
+    justify-content: flex-end;
+    padding: 0;
+  }
+  #profileModal .modal.profile {
+    width: 100%;
+    max-width: 540px;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 24px 0 0 24px;
+    box-shadow: -28px 0 56px rgba(16, 24, 40, 0.22), -10px 0 24px rgba(16, 24, 40, 0.10);
+    animation: drawerSlideIn 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @keyframes drawerSlideIn {
+    from { transform: translateX(100%); }
+    to   { transform: translateX(0); }
+  }
+  /* Reduced-motion users: just snap into place, no slide */
+  @media (prefers-reduced-motion: reduce) {
+    #profileModal .modal.profile { animation: none; }
+  }
   .profile-head-avatar {
     width: 52px; height: 52px;
     border-radius: 50%;
@@ -2477,6 +2520,14 @@
           <span class="k">Background check</span>
           <span class="v status" id="profileBg">—</span>
         </div>
+        <div class="profile-field">
+          <span class="k">Instagram</span>
+          <span class="v" id="profileInstagram">—</span>
+        </div>
+        <div class="profile-field">
+          <span class="k">Photo source</span>
+          <span class="v" id="profilePhotoSource">—</span>
+        </div>
       </div>
 
       <div class="profile-note" id="profileNoteWrap">
@@ -2918,7 +2969,7 @@
     return `
       <article class="card ${levelCls}" data-id="${a.id}">
         <div class="card-head">
-          <div class="avatar ${cs.ring}" style="${avatarStyle}">${avatarContent}</div>
+          <div class="avatar is-clickable ${cs.ring}" style="${avatarStyle}" data-action="open-profile" data-agent-id="${escapeAttr(a.id)}" role="button" tabindex="0" aria-label="View ${escapeAttr(a.name)}'s profile">${avatarContent}</div>
           <div class="agent-info">
             <span class="name">${a.name}</span>
             <span class="meta-row">
@@ -3003,7 +3054,7 @@
     return `
       <article class="row ${levelCls}" data-id="${a.id}">
         <div class="row-identity">
-          <div class="avatar ${cs.ring}" style="${avatarStyle}">${avatarContent}</div>
+          <div class="avatar is-clickable ${cs.ring}" style="${avatarStyle}" data-action="open-profile" data-agent-id="${escapeAttr(a.id)}" role="button" tabindex="0" aria-label="View ${escapeAttr(a.name)}'s profile">${avatarContent}</div>
           <div class="agent-info">
             <span class="name">${a.name}</span>
             <span class="meta-row">
@@ -3257,6 +3308,20 @@
     bgEl.className = `v status ${bg.cls}`;
     bgEl.innerHTML = `<span class="dot"></span>${bg.txt}`;
 
+    // Instagram handle — clickable chip if present, dash otherwise
+    const igEl = document.getElementById("profileInstagram");
+    igEl.innerHTML = a.instagramHandle ? igLinkHTML(a.instagramHandle) : "—";
+
+    // Photo source — humanize the enum so the user can see WHERE the avatar came from
+    const sourceLabels = {
+      instagram: "Instagram",
+      gravatar:  "Gravatar (from email)",
+      upload:    "Manual upload",
+      default:   "Initials fallback"
+    };
+    document.getElementById("profilePhotoSource").textContent =
+      sourceLabels[a.profileImageSource] || sourceLabels.default;
+
     document.getElementById("profileNotes").textContent = a.notes || "No notes yet.";
   }
 
@@ -3489,6 +3554,15 @@
     setStage(id, step);
   });
 
+  /* ---------- Clickable profile pictures → open the profile drawer ---------- */
+  document.addEventListener("click", (e) => {
+    const av = e.target.closest('.avatar.is-clickable[data-action="open-profile"]');
+    if (!av) return;
+    e.stopPropagation();           // don't bubble to the card / row
+    const id = av.dataset.agentId;
+    if (id) openProfile(id);
+  });
+
   /* ---------- Keyboard ---------- */
   document.addEventListener("keydown", (e) => {
     // Activate a focused tracker dot with Enter or Space
@@ -3500,6 +3574,16 @@
       const id   = e.target.dataset.agentId;
       const step = Number(e.target.dataset.step);
       if (id && !Number.isNaN(step)) setStage(id, step);
+      return;
+    }
+    // Activate a focused profile picture with Enter or Space
+    if ((e.key === "Enter" || e.key === " ") &&
+        e.target instanceof HTMLElement &&
+        e.target.classList.contains("avatar") &&
+        e.target.classList.contains("is-clickable")) {
+      e.preventDefault();
+      const id = e.target.dataset.agentId;
+      if (id) openProfile(id);
       return;
     }
     if (e.key === "Escape") {
