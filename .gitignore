@@ -1,0 +1,27 @@
+# Local Claude / IDE state — machine-specific paths, don't ship to anyone else
+.claude/
+
+# Environment secrets — if you ever add one
+.env
+.env.local
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor noise
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Python venv / cache (you don't have these yet, but just in case)
+__pycache__/
+.venv/
+venv/
+
+# Node — same, just defensive
+node_modules/
