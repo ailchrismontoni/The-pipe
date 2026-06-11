@@ -2768,11 +2768,11 @@
   }
 
   async function dbInsertAgent(local) {
-    if (!sb || !currentUser) return null;
+    if (!sb || !currentUser) return { agent: null, error: new Error("Not signed in") };
     const row = localToDb(local, currentUser.id);
     const { data, error } = await sb.from("agents").insert(row).select().single();
-    if (error) { console.error("dbInsertAgent:", error); return null; }
-    return dbToLocal(data);
+    if (error) { console.error("dbInsertAgent:", error); return { agent: null, error }; }
+    return { agent: dbToLocal(data), error: null };
   }
   async function dbUpdateAgent(id, partial) {
     if (!sb || !currentUser) return;
@@ -3521,13 +3521,25 @@
       lastCommunication: new Date().toISOString()
     });
 
-    // Persist to Supabase, then use the DB row (with real UUID id) locally
-    const saved = await dbInsertAgent(draft);
-    const newAgent = saved || draft;
-    AGENTS.unshift(newAgent);
+    // Persist to Supabase first — if the write fails we DON'T silently keep a
+    // local-only ghost copy that would vanish on refresh. Surface the real
+    // database error so the user can act on it.
+    const { agent: saved, error: insertErr } = await dbInsertAgent(draft);
 
+    if (insertErr) {
+      const msg = (insertErr.message || "Save failed").slice(0, 180);
+      // Common case: schema is missing a column we're sending → "column ... does not exist"
+      const hint = /column .* does not exist/i.test(msg)
+        ? " — run supabase-complete.sql in your Supabase SQL editor"
+        : "";
+      toast(`⚠️ Couldn't save ${name}: ${msg}${hint}`);
+      // Keep the modal open so the user doesn't lose what they typed
+      return;
+    }
+
+    AGENTS.unshift(saved);
     closeModalFn();
-    activeStage = newAgent.stage;
+    activeStage = saved.stage;
     document.getElementById("filter").value = activeStage;
     render();
     toast(`${name} added at ${ONBOARDING_STEPS[step].full}`);
