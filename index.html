@@ -1296,6 +1296,69 @@
     box-shadow: 0 4px 10px rgba(139, 92, 246, 0.18);
   }
   .ig-chip svg { flex-shrink: 0; }
+
+  /* ---------- Manage members modal ---------- */
+  .member-row {
+    display: grid;
+    grid-template-columns: 40px 1fr auto;
+    gap: 14px;
+    align-items: center;
+    padding: 12px 14px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    margin-bottom: 10px;
+  }
+  .member-avatar {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: var(--gradient);
+    color: #fff;
+    display: grid; place-items: center;
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .member-info { min-width: 0; }
+  .member-name { font-size: 13.5px; font-weight: 600; }
+  .member-email { font-size: 12px; color: var(--text-muted); }
+  .member-controls { display: flex; gap: 10px; align-items: flex-end; }
+  .member-controls label { display: flex; flex-direction: column; gap: 3px; }
+  .member-lbl {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+  .member-controls select {
+    padding: 6px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    font-size: 12.5px;
+    background: #fff;
+    cursor: pointer;
+    min-width: 130px;
+  }
+  .member-controls select:disabled { background: var(--surface-muted); cursor: not-allowed; }
+
+  /* "Owned by" chip — shown on cards/rows when viewing team or all */
+  .owner-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-soft);
+    background: var(--surface-muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px 8px;
+    white-space: nowrap;
+  }
+  .owner-chip svg { flex-shrink: 0; opacity: 0.8; }
+  /* Hide owner chip in compact row view (same reason we hide the IG chip there) */
+  .row .meta-row .owner-chip,
+  .row .meta-row span.dot:has(+ .owner-chip) { display: none; }
   /* Row view is too tight horizontally for the chip alongside email — hide it there.
      The handle is still saved and clickable from the card view and the profile modal. */
   .row .meta-row .ig-chip,
@@ -2125,6 +2188,14 @@
       </div>
     </div>
 
+    <!-- View scope (role-gated): hidden until we know the user can pick more than 'mine' -->
+    <div id="scopeSection" hidden>
+      <div class="nav-section-label">View</div>
+      <div class="nav" id="scopeNav">
+        <!-- populated by JS based on role -->
+      </div>
+    </div>
+
     <div>
       <div class="nav-section-label">Workspace</div>
       <div class="nav">
@@ -2454,6 +2525,27 @@
 </div>
 
 <!-- ============ AGENT PROFILE MODAL ============ -->
+<!-- ============ MANAGE MEMBERS MODAL (owner only) ============ -->
+<div class="modal-backdrop" id="membersModal">
+  <div class="modal" role="dialog" aria-modal="true" style="max-width:720px;">
+    <div class="modal-head">
+      <div class="icon-tile" style="background:var(--gradient);color:#fff;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13A4 4 0 0 1 16 11"/></svg>
+      </div>
+      <div class="t">
+        <h3>Manage members</h3>
+        <span>Owner-only · set roles and uplines</span>
+      </div>
+      <button class="close" id="closeMembersModal" aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="membersBody" style="display:block;padding:18px 24px 22px;">
+      <!-- populated by renderMembersList() -->
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="profileModal">
   <div class="modal profile" role="dialog" aria-modal="true">
     <div class="modal-head">
@@ -2710,6 +2802,37 @@
     : null;
 
   let currentUser = null;
+  /** Role & upline of the signed-in user. Loaded from public.user_profiles. */
+  let currentUserProfile = null;   // { user_id, email, display_name, role, leader_id }
+  /** Map of user_id -> display_name for agents owned by other users. Populated
+   *  when we load with scope = 'team' | 'all' so cards can show "owned by X". */
+  let agentOwners = new Map();
+  /** Visibility scope. 'mine' is always available; 'team' visible to leader/owner;
+   *  'all' visible to owner only. */
+  let viewScope = "mine";
+
+  async function loadCurrentUserProfile() {
+    if (!sb || !currentUser) { currentUserProfile = null; return; }
+    const { data, error } = await sb
+      .from("user_profiles")
+      .select("user_id, email, display_name, role, leader_id")
+      .eq("user_id", currentUser.id)
+      .maybeSingle();
+    if (error) {
+      console.error("loadCurrentUserProfile:", error);
+      currentUserProfile = null;
+    } else {
+      currentUserProfile = data || null;
+    }
+  }
+
+  function canViewScope(scope) {
+    const role = currentUserProfile?.role || "member";
+    if (scope === "mine") return true;
+    if (scope === "team") return role === "leader" || role === "owner";
+    if (scope === "all")  return role === "owner";
+    return false;
+  }
 
   /* ---------- DB row <-> local agent mapping ---------- */
   function dbToLocal(row) {
@@ -2758,13 +2881,41 @@
 
   async function loadAgentsFromDb() {
     if (!sb || !currentUser) return;
-    const { data, error } = await sb
-      .from("agents")
-      .select("*")
-      .order("created_at", { ascending: false });
+
+    // Build the query based on the current scope. RLS lets us see only what
+    // we're entitled to (own / downline / all), so when scope ≠ 'mine' we
+    // just ask for everything visible. When scope = 'mine' we narrow to
+    // our own user_id.
+    let q = sb.from("agents").select("*").order("created_at", { ascending: false });
+    if (viewScope === "mine") {
+      q = q.eq("user_id", currentUser.id);
+    }
+    const { data, error } = await q;
     if (error) { console.error("loadAgents:", error); return; }
+
     AGENTS.length = 0;
-    (data || []).forEach(row => AGENTS.push(dbToLocal(row)));
+    (data || []).forEach(row => {
+      const local = dbToLocal(row);
+      local.ownerId = row.user_id;             // preserve so we can show whose pipeline
+      AGENTS.push(local);
+    });
+
+    // For team / all views: resolve each agent's owner name so cards can show
+    // an "owned by …" badge.
+    agentOwners = new Map();
+    if (viewScope !== "mine") {
+      const uniqueOwnerIds = [...new Set(AGENTS.map(a => a.ownerId).filter(Boolean))];
+      if (uniqueOwnerIds.length > 0) {
+        const { data: profiles, error: pe } = await sb
+          .from("user_profiles")
+          .select("user_id, display_name, email")
+          .in("user_id", uniqueOwnerIds);
+        if (pe) console.error("loadAgentOwners:", pe);
+        (profiles || []).forEach(p => {
+          agentOwners.set(p.user_id, p.display_name || p.email || "Unknown");
+        });
+      }
+    }
   }
 
   async function dbInsertAgent(local) {
@@ -2923,6 +3074,19 @@
     </a>`;
   }
 
+  /** Owner chip shown on cards/rows when in team/all view AND the agent isn't
+   *  the current user's own. Returns empty string otherwise so it doesn't
+   *  clutter the "mine" view. */
+  function ownerChipHTML(agent) {
+    if (viewScope === "mine") return "";
+    if (!agent.ownerId || agent.ownerId === currentUser?.id) return "";
+    const name = agentOwners.get(agent.ownerId) || "Unknown";
+    return `<span class="owner-chip" title="Pipeline owned by ${escapeAttr(name)}">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg>
+      ${escapeAttr(name)}
+    </span>`;
+  }
+
   /* ---------- Sidebar ---------- */
   function renderNav() {
     const nav = document.getElementById("nav");
@@ -2951,6 +3115,59 @@
         render();
       });
     });
+
+    renderScopeNav();
+  }
+
+  function renderScopeNav() {
+    const section = document.getElementById("scopeSection");
+    const wrap    = document.getElementById("scopeNav");
+    if (!section || !wrap) return;
+
+    // Only show this section if the user can pick more than just 'mine'.
+    if (!canViewScope("team") && !canViewScope("all")) {
+      section.hidden = true;
+      return;
+    }
+    section.hidden = false;
+
+    const scopes = [
+      { id: "mine", label: "My pipeline",
+        icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>` },
+      { id: "team", label: "My team's pipelines",
+        icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>` },
+      { id: "all", label: "All pipelines",
+        icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>` }
+    ].filter(s => canViewScope(s.id));
+
+    const ownerAdmin = currentUserProfile?.role === "owner"
+      ? `<button class="nav-item" data-action="manage-members" style="margin-top:6px;">
+           <span class="icon">
+             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+           </span>
+           <span>Manage members</span>
+         </button>`
+      : "";
+
+    wrap.innerHTML = scopes.map(s => `
+      <button class="nav-item ${viewScope === s.id ? "active" : ""}" data-scope="${s.id}">
+        <span class="icon">${s.icon}</span>
+        <span>${s.label}</span>
+      </button>`).join("") + ownerAdmin;
+
+    wrap.querySelectorAll('[data-scope]').forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const next = btn.dataset.scope;
+        if (next === viewScope) return;
+        viewScope = next;
+        activeStage = "all"; // reset stage filter when changing scope
+        document.getElementById("filter").value = "all";
+        await loadAgentsFromDb();
+        render();
+      });
+    });
+    const manageBtn = wrap.querySelector('[data-action="manage-members"]');
+    if (manageBtn) manageBtn.addEventListener("click", () => openMembersModal());
   }
 
   /* ---------- Cards ---------- */
@@ -2977,6 +3194,7 @@
               <span class="dot"></span>
               <span>${a.email || a.phone || "No contact"}</span>
               ${a.instagramHandle ? `<span class="dot"></span>${igLinkHTML(a.instagramHandle)}` : ""}
+              ${viewScope !== "mine" ? `<span class="dot"></span>${ownerChipHTML(a)}` : ""}
             </span>
           </div>
           <span class="stage-badge">${stage ? stage.label : "—"}</span>
@@ -3062,6 +3280,7 @@
               <span class="dot"></span>
               <span>${a.email || a.phone || "No contact"}</span>
               ${a.instagramHandle ? `<span class="dot"></span>${igLinkHTML(a.instagramHandle)}` : ""}
+              ${viewScope !== "mine" ? `<span class="dot"></span>${ownerChipHTML(a)}` : ""}
             </span>
           </div>
         </div>
@@ -3602,12 +3821,93 @@
       if (modal.classList.contains("show")) closeModalFn();
       if (profileModal.classList.contains("show")) closeProfileFn();
       if (drillModal.classList.contains("show")) closeDrillFn();
+      const mm = document.getElementById("membersModal");
+      if (mm && mm.classList.contains("show")) closeMembersModal();
     }
     if ((e.metaKey || e.ctrlKey) && e.key === "k") {
       e.preventDefault();
       document.getElementById("search").focus();
     }
   });
+
+  /* ---------- Manage members modal (owner only) ---------- */
+  const membersModal = document.getElementById("membersModal");
+
+  async function openMembersModal() {
+    if (!sb || currentUserProfile?.role !== "owner") return;
+    membersModal.classList.add("show");
+    await renderMembersList();
+  }
+  function closeMembersModal() {
+    membersModal.classList.remove("show");
+  }
+  document.getElementById("closeMembersModal").addEventListener("click", closeMembersModal);
+  membersModal.addEventListener("click", (e) => { if (e.target === membersModal) closeMembersModal(); });
+
+  async function renderMembersList() {
+    const body = document.getElementById("membersBody");
+    body.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);font-size:13px;">Loading members…</div>`;
+    const { data, error } = await sb.from("user_profiles")
+      .select("user_id, email, display_name, role, leader_id")
+      .order("created_at", { ascending: true });
+    if (error) {
+      body.innerHTML = `<div style="color:#b91c1c;font-size:13px;">Couldn't load members: ${escapeAttr(error.message)}</div>`;
+      return;
+    }
+    const profiles = data || [];
+    const byId = new Map(profiles.map(p => [p.user_id, p]));
+
+    body.innerHTML = profiles.map(p => {
+      const name  = p.display_name || p.email || "Unknown";
+      const isMe  = p.user_id === currentUser?.id;
+      const upline = p.leader_id ? (byId.get(p.leader_id)?.display_name || byId.get(p.leader_id)?.email || "—") : "—";
+      const leaderOptions = ['<option value="">— none —</option>'].concat(
+        profiles
+          .filter(o => o.user_id !== p.user_id) // can't be your own leader
+          .map(o => `<option value="${escapeAttr(o.user_id)}"${o.user_id === p.leader_id ? " selected" : ""}>${escapeAttr(o.display_name || o.email)}</option>`)
+      ).join("");
+      return `
+        <div class="member-row" data-user-id="${escapeAttr(p.user_id)}">
+          <div class="member-avatar">${escapeAttr(initials(name))}</div>
+          <div class="member-info">
+            <div class="member-name">${escapeAttr(name)} ${isMe ? '<span style="color:var(--text-muted);font-weight:500;font-size:11px;">(you)</span>' : ''}</div>
+            <div class="member-email">${escapeAttr(p.email || "")}</div>
+          </div>
+          <div class="member-controls">
+            <label>
+              <span class="member-lbl">Role</span>
+              <select class="member-role" ${isMe ? "disabled" : ""}>
+                <option value="member"${p.role === 'member' ? ' selected' : ''}>Member</option>
+                <option value="leader"${p.role === 'leader' ? ' selected' : ''}>Leader</option>
+                <option value="owner"${p.role === 'owner'  ? ' selected' : ''}>Owner</option>
+              </select>
+            </label>
+            <label>
+              <span class="member-lbl">Reports to</span>
+              <select class="member-leader">${leaderOptions}</select>
+            </label>
+          </div>
+        </div>
+      `;
+    }).join("") + `<div style="margin-top:10px;font-size:12px;color:var(--text-muted);text-align:center;">Changes save automatically.</div>`;
+
+    // Wire role + leader changes
+    body.querySelectorAll(".member-row").forEach(row => {
+      const userId = row.dataset.userId;
+      row.querySelector(".member-role")?.addEventListener("change", async (e) => {
+        const newRole = e.target.value;
+        const { error } = await sb.from("user_profiles").update({ role: newRole }).eq("user_id", userId);
+        if (error) { toast(`Couldn't change role: ${error.message}`); return; }
+        toast(`Role updated`);
+      });
+      row.querySelector(".member-leader")?.addEventListener("change", async (e) => {
+        const newLeader = e.target.value || null;
+        const { error } = await sb.from("user_profiles").update({ leader_id: newLeader }).eq("user_id", userId);
+        if (error) { toast(`Couldn't change upline: ${error.message}`); return; }
+        toast(`Upline updated`);
+      });
+    });
+  }
 
   /* ---------- Drill-down config (one entry per carousel card) ---------- */
   const DRILL_CONFIG = [
@@ -3918,6 +4218,7 @@
     if (session && session.user) {
       currentUser = session.user;
       setUserMeta(currentUser);
+      await loadCurrentUserProfile();
       await loadAgentsFromDb();
       render();
       showAppScreen();
@@ -3932,12 +4233,16 @@
         currentUser = session.user;
         setUserMeta(currentUser);
         if (wasLoggedOut) {
+          await loadCurrentUserProfile();
           await loadAgentsFromDb();
           render();
           showAppScreen();
         }
       } else if (event === "SIGNED_OUT") {
         currentUser = null;
+        currentUserProfile = null;
+        viewScope = "mine";
+        agentOwners = new Map();
         AGENTS.length = 0;
         render();
         showAuthView("login");
